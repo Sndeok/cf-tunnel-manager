@@ -28,6 +28,7 @@
 - **Tunnel 运行控制**
   - 启动 / 停止本地 cloudflared 进程
   - 使用 PID 文件追踪运行状态
+  - 应用或 Docker 容器启动时自动恢复已有隧道
   - cloudflared stdout/stderr 写入独立日志文件
   - 页面内可查看单个隧道的 cloudflared 日志，并支持分页
 
@@ -45,6 +46,7 @@
   - 提供 `Dockerfile` 和 `docker-compose.yml`
   - 使用 `network_mode: host`，便于容器访问宿主机或局域网里的目标服务
   - `./data` 挂载到容器内 `/root/.cf-tunnel-manager`，用于持久化凭证、数据库、配置和日志
+  - 默认 `AUTO_START_TUNNELS=true`，容器重启后自动启动已创建的隧道
 
 ## 项目结构
 
@@ -166,6 +168,8 @@ http://服务器IP:5000
 
 点击「启动」即可运行 cloudflared。
 
+后续如果 Docker 容器、宿主机或应用进程重启，启动时会自动扫描已持久化的隧道并恢复运行，不需要逐个手动点击「启动」。
+
 ## 快速开始：直接运行
 
 ```bash
@@ -264,6 +268,39 @@ Docker 部署时对应：
 - Cloudflare API 凭证验证
 - Tunnel 创建/删除 API
 - cloudflared 隧道运行过程
+
+### 自动启动已有隧道
+
+默认开启。应用启动时会：
+
+1. 初始化 SQLite 数据库。
+2. 确认 `~/.cf-tunnel-manager/bin/cloudflared` 可用。
+3. 扫描数据库中已有的 tunnel 记录。
+4. 跳过已经在运行的隧道。
+5. 对存在 `configs/<tunnel_id>.yml` 的隧道执行 `cloudflared tunnel --config ... run <tunnel_id>`。
+6. 写入新的 PID 文件，并在操作日志中记录「容器启动自动恢复隧道」。
+
+Docker Compose 中默认配置：
+
+```yaml
+environment:
+  - AUTO_START_TUNNELS=true
+```
+
+如果你想容器启动后只打开管理面板、不自动恢复隧道，可以改成：
+
+```yaml
+environment:
+  - AUTO_START_TUNNELS=false
+```
+
+然后重新创建容器：
+
+```bash
+docker compose up -d --build --force-recreate
+```
+
+> 说明：Docker 会把 `./data` 挂载到 `/root/.cf-tunnel-manager`，这会覆盖镜像构建阶段放在该目录里的文件。程序启动时会自动把镜像里的 `/usr/local/bin/cloudflared` 链接到 `data/bin/cloudflared`，避免因为挂载空数据目录导致 Web UI 误判 cloudflared 未安装。
 
 ## 隧道目标服务填写示例
 

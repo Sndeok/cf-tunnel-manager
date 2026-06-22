@@ -8,3 +8,4 @@ services:
       - ./data:/root/.cf-tunnel-manager
     environment:
       - TZ=Asia/Shanghai
+      - AUTO_START_TUNNELS=true

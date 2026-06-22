@@ -6,6 +6,7 @@ Cloudflare Tunnel Manager - Web UI
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -127,6 +128,179 @@ def add_log(tunnel_id, message, level="info"):
     db.commit()
 
 
+def env_flag(name, default=True):
+    """Read a boolean environment flag."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def ensure_cloudflared_available():
+    """
+    Ensure DATA_DIR/bin/cloudflared exists.
+
+    In Docker, /root/.cf-tunnel-manager is normally a mounted volume. That
+    volume hides the build-time symlink created in the image, so recreate a
+    symlink inside the mounted data directory on every startup when needed.
+    """
+    if CLOUDFLARED_BIN.exists():
+        try:
+            CLOUDFLARED_BIN.chmod(CLOUDFLARED_BIN.stat().st_mode | 0o111)
+        except OSError:
+            pass
+        return True
+
+    bundled = Path("/usr/local/bin/cloudflared")
+    source = bundled if bundled.exists() else None
+    if source is None:
+        found = shutil.which("cloudflared")
+        source = Path(found) if found else None
+    if source is None:
+        return False
+
+    CLOUDFLARED_BIN.parent.mkdir(parents=True, exist_ok=True)
+    if CLOUDFLARED_BIN.exists() or CLOUDFLARED_BIN.is_symlink():
+        CLOUDFLARED_BIN.unlink(missing_ok=True)
+
+    try:
+        CLOUDFLARED_BIN.symlink_to(source)
+    except OSError:
+        try:
+            shutil.copy2(source, CLOUDFLARED_BIN)
+            CLOUDFLARED_BIN.chmod(0o755)
+        except OSError:
+            return False
+    return True
+
+
+def _pid_matches_tunnel(pid, tunnel_id):
+    """Best-effort guard against stale persisted PID files."""
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    if not cmdline_path.exists():
+        # Non-Linux fallback: os.kill(pid, 0) already proved the PID exists.
+        return True
+    try:
+        cmdline = cmdline_path.read_bytes().replace(b"\0", b" ").decode("utf-8", "ignore")
+    except OSError:
+        return False
+    return "cloudflared" in cmdline and tunnel_id in cmdline
+
+
+def get_tunnel_runtime_status(tunnel_id, cleanup_stale=True):
+    """Return (running, pid) and remove stale PID files when safe."""
+    pid_file = PID_DIR / f"{tunnel_id}.pid"
+    if not pid_file.exists():
+        return False, None
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        if cleanup_stale:
+            pid_file.unlink(missing_ok=True)
+        return False, None
+
+    if not _pid_matches_tunnel(pid, tunnel_id):
+        if cleanup_stale:
+            pid_file.unlink(missing_ok=True)
+        return False, None
+    return True, pid
+
+
+def start_tunnel_process(tunnel_id, reason="manual"):
+    """Start a tunnel from its persisted cloudflared config."""
+    db = get_db()
+    tunnel = db.execute("SELECT * FROM tunnels WHERE id = ?", (tunnel_id,)).fetchone()
+    if not tunnel:
+        return False, "隧道不存在", None
+
+    if not ensure_cloudflared_available():
+        return False, "cloudflared 未安装，请先安装", None
+
+    config_file = CONFIG_DIR / f"{tunnel_id}.yml"
+    if not config_file.exists():
+        return False, "配置文件不存在", None
+
+    # Kill an existing cloudflared process for this tunnel, and clean stale PID files.
+    stop_tunnel_process(tunnel_id)
+
+    log_file = LOG_DIR / f"{tunnel_id}.log"
+    pid_file = PID_DIR / f"{tunnel_id}.pid"
+
+    try:
+        with open(log_file, "a") as log:
+            log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {reason} start ===\n")
+            log.flush()
+            proc = subprocess.Popen(
+                [
+                    str(CLOUDFLARED_BIN),
+                    "tunnel",
+                    "--config",
+                    str(config_file),
+                    "run",
+                    tunnel_id,
+                ],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(CONFIG_DIR),
+            )
+        pid_file.write_text(str(proc.pid))
+        db.execute("UPDATE tunnels SET status = 'running' WHERE id = ?", (tunnel_id,))
+        db.commit()
+        if reason == "autostart":
+            add_log(tunnel_id, "容器启动自动恢复隧道")
+        else:
+            add_log(tunnel_id, "隧道已启动")
+        return True, "", proc.pid
+    except Exception as e:
+        return False, f"启动失败: {e}", None
+
+
+def autostart_tunnels():
+    """Start all persisted tunnels during container/app startup."""
+    if not env_flag("AUTO_START_TUNNELS", True):
+        print("AUTO_START_TUNNELS is disabled; existing tunnels will not be started.")
+        return {"started": 0, "already_running": 0, "skipped": 0, "failed": 0}
+
+    db = get_db()
+    tunnels = db.execute("SELECT * FROM tunnels ORDER BY created_at ASC").fetchall()
+    summary = {"started": 0, "already_running": 0, "skipped": 0, "failed": 0}
+    if not tunnels:
+        print("No persisted tunnels to auto-start.")
+        return summary
+
+    ensure_cloudflared_available()
+
+    for tunnel in tunnels:
+        tunnel_id = tunnel["id"]
+        running, _pid = get_tunnel_runtime_status(tunnel_id)
+        if running:
+            summary["already_running"] += 1
+            continue
+
+        config_file = CONFIG_DIR / f"{tunnel_id}.yml"
+        if not config_file.exists():
+            summary["skipped"] += 1
+            add_log(tunnel_id, "容器启动自动恢复跳过：配置文件不存在", "warn")
+            continue
+
+        ok, message, _pid = start_tunnel_process(tunnel_id, reason="autostart")
+        if ok:
+            summary["started"] += 1
+        else:
+            summary["failed"] += 1
+            add_log(tunnel_id, f"容器启动自动恢复失败：{message}", "error")
+
+    print(
+        "Auto-start tunnels: "
+        f"started={summary['started']}, "
+        f"already_running={summary['already_running']}, "
+        f"skipped={summary['skipped']}, failed={summary['failed']}"
+    )
+    return summary
+
+
 # ─── Routes ────────────────────────────────────────────────
 
 
@@ -220,17 +394,8 @@ def api_tunnels():
         results = []
         for t in tunnels:
             d = dict(t)
-            pid_file = PID_DIR / f"{d['id']}.pid"
-            if pid_file.exists():
-                try:
-                    pid = int(pid_file.read_text().strip())
-                    os.kill(pid, 0)
-                    d["status"] = "running"
-                except (OSError, ValueError):
-                    d["status"] = "stopped"
-                    pid_file.unlink(missing_ok=True)
-            else:
-                d["status"] = "stopped"
+            running, _pid = get_tunnel_runtime_status(d["id"])
+            d["status"] = "running" if running else "stopped"
             results.append(d)
         return jsonify(results)
 
@@ -389,45 +554,13 @@ def api_delete_tunnel(tunnel_id):
 
 @app.route("/api/tunnels/<tunnel_id>/start", methods=["POST"])
 def api_start_tunnel(tunnel_id):
-    db = get_db()
-    tunnel = db.execute("SELECT * FROM tunnels WHERE id = ?", (tunnel_id,)).fetchone()
-    if not tunnel:
-        return jsonify({"error": "隧道不存在"}), 404
-
-    if not CLOUDFLARED_BIN.exists():
-        return jsonify({"error": "cloudflared 未安装，请先安装"}), 400
-
-    config_file = CONFIG_DIR / f"{tunnel_id}.yml"
-    if not config_file.exists():
-        return jsonify({"error": "配置文件不存在"}), 400
-
-    # Kill existing if any
-    stop_tunnel_process(tunnel_id)
-
-    log_file = LOG_DIR / f"{tunnel_id}.log"
-    pid_file = PID_DIR / f"{tunnel_id}.pid"
-
-    try:
-        proc = subprocess.Popen(
-            [
-                str(CLOUDFLARED_BIN),
-                "tunnel",
-                "--config",
-                str(config_file),
-                "run",
-                tunnel_id,
-            ],
-            stdout=open(log_file, "a"),
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
-            cwd=str(CONFIG_DIR),
-        )
-        pid_file.write_text(str(proc.pid))
-    except Exception as e:
-        return jsonify({"error": f"启动失败: {e}"}), 500
-
-    add_log(tunnel_id, "隧道已启动")
-    return jsonify({"ok": True, "pid": proc.pid})
+    ok, message, pid = start_tunnel_process(tunnel_id)
+    if ok:
+        return jsonify({"ok": True, "pid": pid})
+    status = 404 if message == "隧道不存在" else 400
+    if message.startswith("启动失败"):
+        status = 500
+    return jsonify({"error": message}), status
 
 
 @app.route("/api/tunnels/<tunnel_id>/stop", methods=["POST"])
@@ -435,22 +568,16 @@ def api_stop_tunnel(tunnel_id):
     stopped = stop_tunnel_process(tunnel_id)
     if stopped:
         add_log(tunnel_id, "隧道已停止")
+        db = get_db()
+        db.execute("UPDATE tunnels SET status = 'stopped' WHERE id = ?", (tunnel_id,))
+        db.commit()
         return jsonify({"ok": True})
     return jsonify({"ok": False, "message": "隧道未在运行"})
 
 
 @app.route("/api/tunnels/<tunnel_id>/status")
 def api_tunnel_status(tunnel_id):
-    pid_file = PID_DIR / f"{tunnel_id}.pid"
-    running = False
-    pid = None
-    if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)
-            running = True
-        except (OSError, ValueError):
-            pid_file.unlink(missing_ok=True)
+    running, pid = get_tunnel_runtime_status(tunnel_id)
 
     # Get recent logs
     log_file = LOG_DIR / f"{tunnel_id}.log"
@@ -531,11 +658,11 @@ def api_tunnel_services(tunnel_id):
         )
 
     # Restart tunnel if running
-    was_running = (PID_DIR / f"{tunnel_id}.pid").exists()
+    was_running, _pid = get_tunnel_runtime_status(tunnel_id)
     if was_running:
         stop_tunnel_process(tunnel_id)
         time.sleep(1)
-        api_start_tunnel(tunnel_id)
+        start_tunnel_process(tunnel_id, reason="config-change")
 
     update_db_tunnel_targets(tunnel_id, config["ingress"])
     add_log(tunnel_id, f"添加服务: {new_hostname} → {new_target}")
@@ -662,11 +789,10 @@ def api_install_cloudflared():
 
 def stop_tunnel_process(tunnel_id):
     pid_file = PID_DIR / f"{tunnel_id}.pid"
-    if not pid_file.exists():
+    running, pid = get_tunnel_runtime_status(tunnel_id)
+    if not running or pid is None:
         return False
     try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)
         # Kill process group
         os.killpg(os.getpgid(pid), 15)  # SIGTERM
         time.sleep(1)
@@ -702,6 +828,9 @@ def check_pyyaml():
 if __name__ == "__main__":
     check_pyyaml()
     init_db()
+    ensure_cloudflared_available()
+    with app.app_context():
+        autostart_tunnels()
     print("=" * 50)
     print("  Cloudflare Tunnel Manager")
     print("  http://127.0.0.1:5000")
