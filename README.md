@@ -20,6 +20,8 @@ docker compose up -d --build
 
 打开 `http://127.0.0.1:5000`（局域网部署则访问 `http://服务器IP:5000`）。
 
+> **构建代理**：如果构建时无法访问 GitHub / Alpine 源，取消 `Dockerfile` 顶部代理行的注释并替换地址。
+
 ### 直接运行
 
 ```bash
@@ -124,18 +126,7 @@ python3 app.py
 
 在「凭证配置」页面可启用代理，仅用于下载和检查更新 cloudflared。**不会**用于 Cloudflare API 或隧道运行。
 
-### Docker 构建代理
 
-如果构建镜像时无法访问 GitHub / Alpine 软件源，取消 `Dockerfile` 顶部代理的注释并替换地址：
-
-```dockerfile
-# ENV HTTP_PROXY=http://your-proxy-host:port \
-#     HTTPS_PROXY=http://your-proxy-host:port
-```
-
-去掉开头的 `#` 并替换 `your-proxy-host:port` 为自己的代理地址。
-
-构建完成后 `Dockerfile` 末尾会清空代理，不影响运行时。
 
 ---
 
