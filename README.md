@@ -31,6 +31,7 @@
   - 应用或 Docker 容器启动时自动恢复已有隧道
   - cloudflared stdout/stderr 写入独立日志文件
   - 页面内可查看单个隧道的 cloudflared 日志，并支持分页
+  - 全局操作日志会显示隧道名称和 hostname，方便区分自动恢复/启动记录
 
 - **多服务 ingress 支持**
   - 后端提供 `/api/tunnels/<id>/services`，可读取和追加同一个 Tunnel 下的 ingress 规则

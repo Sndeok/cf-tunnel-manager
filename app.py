@@ -128,6 +128,15 @@ def add_log(tunnel_id, message, level="info"):
     db.commit()
 
 
+def tunnel_label(tunnel):
+    """Return a human-readable tunnel label for logs and UI."""
+    if not tunnel:
+        return "未知隧道"
+    hostname = f"{tunnel['subdomain']}.{tunnel['domain']}"
+    name = tunnel["name"] or hostname
+    return f"{name}（{hostname}）" if name != hostname else hostname
+
+
 def env_flag(name, default=True):
     """Read a boolean environment flag."""
     value = os.environ.get(name)
@@ -248,10 +257,13 @@ def start_tunnel_process(tunnel_id, reason="manual"):
         pid_file.write_text(str(proc.pid))
         db.execute("UPDATE tunnels SET status = 'running' WHERE id = ?", (tunnel_id,))
         db.commit()
+        label = tunnel_label(tunnel)
         if reason == "autostart":
-            add_log(tunnel_id, "容器启动自动恢复隧道")
+            add_log(tunnel_id, f"容器启动自动恢复隧道：{label}")
+        elif reason == "config-change":
+            add_log(tunnel_id, f"配置变更后重启隧道：{label}")
         else:
-            add_log(tunnel_id, "隧道已启动")
+            add_log(tunnel_id, f"隧道已启动：{label}")
         return True, "", proc.pid
     except Exception as e:
         return False, f"启动失败: {e}", None
@@ -676,14 +688,44 @@ def api_logs():
     db = get_db()
     if tunnel_id:
         logs = db.execute(
-            "SELECT * FROM logs WHERE tunnel_id = ? ORDER BY created_at DESC LIMIT 100",
+            """
+            SELECT logs.*, tunnels.name AS tunnel_name, tunnels.domain, tunnels.subdomain, tunnels.target
+            FROM logs
+            LEFT JOIN tunnels ON tunnels.id = logs.tunnel_id
+            WHERE logs.tunnel_id = ?
+            ORDER BY logs.created_at DESC
+            LIMIT 100
+            """,
             (tunnel_id,),
         ).fetchall()
     else:
         logs = db.execute(
-            "SELECT * FROM logs ORDER BY created_at DESC LIMIT 100"
+            """
+            SELECT logs.*, tunnels.name AS tunnel_name, tunnels.domain, tunnels.subdomain, tunnels.target
+            FROM logs
+            LEFT JOIN tunnels ON tunnels.id = logs.tunnel_id
+            ORDER BY logs.created_at DESC
+            LIMIT 100
+            """
         ).fetchall()
-    return jsonify([dict(row) for row in logs])
+    results = []
+    for row in logs:
+        item = dict(row)
+        if item.get("domain") and item.get("subdomain"):
+            item["hostname"] = f"{item['subdomain']}.{item['domain']}"
+            item["tunnel_label"] = (
+                f"{item['tunnel_name']}（{item['hostname']}）"
+                if item.get("tunnel_name") and item["tunnel_name"] != item["hostname"]
+                else item["hostname"]
+            )
+        elif item.get("tunnel_id"):
+            item["hostname"] = ""
+            item["tunnel_label"] = f"已删除隧道 {item['tunnel_id'][:8]}"
+        else:
+            item["hostname"] = ""
+            item["tunnel_label"] = "系统"
+        results.append(item)
+    return jsonify(results)
 
 
 @app.route("/api/check-update", methods=["POST"])
