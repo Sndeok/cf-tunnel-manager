@@ -79,6 +79,7 @@ def init_db():
         );
     """)
     ensure_log_snapshot_columns(db)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_logs_tunnel_created ON logs(tunnel_id, created_at)")
     db.commit()
     db.close()
 
@@ -145,8 +146,13 @@ def cf_request(method, path, body=None):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        err = json.loads(e.read())
-        return {"success": False, "errors": err.get("errors", [{"message": str(e)}])}
+        try:
+            err = json.loads(e.read())
+            return {"success": False, "errors": err.get("errors", [{"message": str(e)}])}
+        except (json.JSONDecodeError, Exception):
+            return {"success": False, "errors": [{"message": str(e)}]}
+    except (urllib.error.URLError, json.JSONDecodeError, Exception) as e:
+        return {"success": False, "errors": [{"message": str(e)}]}
 
 
 def add_log(tunnel_id, message, level="info"):
@@ -296,7 +302,8 @@ def start_tunnel_process(tunnel_id, reason="manual"):
         return False, "配置文件不存在", None
 
     # Kill an existing cloudflared process for this tunnel, and clean stale PID files.
-    stop_tunnel_process(tunnel_id)
+    result = stop_tunnel_process(tunnel_id)
+    stopped = result[0] if isinstance(result, tuple) else result  # noqa
 
     log_file = LOG_DIR / f"{tunnel_id}.log"
     pid_file = PID_DIR / f"{tunnel_id}.pid"
@@ -405,7 +412,9 @@ def api_config():
             }
         )
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    if not data:
+        return jsonify({"error": "请求体格式错误"}), 400
     creds = load_credentials()
 
     if data.get("account_id"):
@@ -481,7 +490,9 @@ def api_tunnels():
         return jsonify(results)
 
     # POST: Create tunnel
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    if not data:
+        return jsonify({"error": "请求体格式错误"}), 400
     name = data.get("name", f"tunnel-{int(time.time())}")
     domain = data["domain"]
     subdomain = data["subdomain"]
@@ -614,7 +625,8 @@ def api_delete_tunnel(tunnel_id):
     label = tunnel_label(tunnel)
 
     # Stop if running
-    stop_tunnel_process(tunnel_id)
+    result = stop_tunnel_process(tunnel_id)
+    stopped = result[0] if isinstance(result, tuple) else result  # noqa
 
     creds = load_credentials()
     account_id = creds.get("account_id")
@@ -656,7 +668,8 @@ def api_start_tunnel(tunnel_id):
 
 @app.route("/api/tunnels/<tunnel_id>/stop", methods=["POST"])
 def api_stop_tunnel(tunnel_id):
-    stopped = stop_tunnel_process(tunnel_id)
+    result = stop_tunnel_process(tunnel_id)
+    stopped, extra = (result[0], result[1]) if isinstance(result, tuple) else (result, None)
     if stopped:
         db = get_db()
         tunnel = db.execute("SELECT * FROM tunnels WHERE id = ?", (tunnel_id,)).fetchone()
@@ -665,6 +678,11 @@ def api_stop_tunnel(tunnel_id):
         db.execute("UPDATE tunnels SET status = 'stopped' WHERE id = ?", (tunnel_id,))
         db.commit()
         return jsonify({"ok": True})
+    if extra == "crashed":
+        db = get_db()
+        db.execute("UPDATE tunnels SET status = 'stopped' WHERE id = ?", (tunnel_id,))
+        db.commit()
+        return jsonify({"ok": False, "message": "隧道进程已异常退出，请重新启动"})
     return jsonify({"ok": False, "message": "隧道未在运行"})
 
 
@@ -708,9 +726,17 @@ def api_tunnel_services(tunnel_id):
         return jsonify(services)
 
     # POST: Add service to existing tunnel
-    data = request.json
-    new_hostname = f"{data['subdomain']}.{tunnel['domain']}"
-    new_target = data["target"]
+    data = request.get_json(silent=True) or {}
+    if not data:
+        return jsonify({"error": "请求体格式错误"}), 400
+    subdomain = data.get("subdomain")
+    target = data.get("target")
+    if not subdomain or not target:
+        return jsonify({"error": "子域名和目标服务不能为空"}), 400
+    if not target.startswith(("http://", "https://")):
+        return jsonify({"error": "目标服务必须以 http:// 或 https:// 开头"}), 400
+    new_hostname = f"{subdomain}.{tunnel['domain']}"
+    new_target = target
 
     config_file = CONFIG_DIR / f"{tunnel_id}.yml"
     if not config_file.exists():
@@ -726,8 +752,16 @@ def api_tunnel_services(tunnel_id):
         if rule.get("hostname") == new_hostname:
             return jsonify({"error": "该子域名已存在"}), 400
 
-    # Insert before the catch-all
-    catch_all = config["ingress"].pop()  # Remove 404 rule
+    # Insert before the catch-all (find it safely)
+    catch_all_idx = None
+    for i, rule in enumerate(config["ingress"]):
+        if not rule.get("hostname") and "http_status" in rule.get("service", ""):
+            catch_all_idx = i
+            break
+    if catch_all_idx is not None:
+        catch_all = config["ingress"].pop(catch_all_idx)
+    else:
+        catch_all = {"service": "http_status:404"}
     config["ingress"].append({"hostname": new_hostname, "service": new_target})
     config["ingress"].append(catch_all)
 
@@ -744,7 +778,7 @@ def api_tunnel_services(tunnel_id):
             f"/zones/{zone_id}/dns_records",
             {
                 "type": "CNAME",
-                "name": data["subdomain"],
+                "name": subdomain,
                 "content": f"{tunnel_id}.cfargotunnel.com",
                 "proxied": True,
             },
@@ -907,9 +941,10 @@ def api_install_cloudflared():
 
 def stop_tunnel_process(tunnel_id):
     pid_file = PID_DIR / f"{tunnel_id}.pid"
+    stale_pid_exists = pid_file.exists()
     running, pid = get_tunnel_runtime_status(tunnel_id)
     if not running or pid is None:
-        return False
+        return (False, "crashed") if stale_pid_exists else (False, None)
     try:
         # Kill process group
         os.killpg(os.getpgid(pid), 15)  # SIGTERM
@@ -921,7 +956,7 @@ def stop_tunnel_process(tunnel_id):
     except (OSError, ValueError):
         pass
     pid_file.unlink(missing_ok=True)
-    return True
+    return (True, pid)
 
 
 def update_db_tunnel_targets(tunnel_id, ingress_rules):

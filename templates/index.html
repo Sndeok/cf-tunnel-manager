@@ -488,7 +488,7 @@ function renderTunnelList(tunnels, containerId) {
             ${t.status === 'running' ? '⏹ 停止' : '▶ 启动'}
           </button>
           <button class="btn btn-sm btn-ghost" id="log-btn-${escapeHtml(t.id)}" onclick="viewTunnelLogs('${escapeHtml(t.id)}')" title="查看日志">📄</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteTunnel('${escapeHtml(t.id)}')">🗑</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteTunnel('${escapeHtml(t.id)}', '${escapeHtml(t.name)}')">🗑</button>
         </div>
       </div>
       <div id="log-panel-${escapeHtml(t.id)}"></div>
@@ -545,8 +545,8 @@ async function toggleTunnel(id, currentStatus) {
   }
 }
 
-async function deleteTunnel(id) {
-  if (!confirm('确定删除此隧道？这会同时删除 Cloudflare 上的隧道和 DNS 记录。')) return;
+async function deleteTunnel(id, name) {
+  if (!confirm(`确定删除隧道「${name || id.substring(0,8)}」？这会同时删除 Cloudflare 上的隧道和 DNS 记录。请确认。`)) return;
   try {
     const res = await fetch(API + '/tunnels/' + id, { method: 'DELETE' });
     if (res.ok) {
@@ -588,8 +588,8 @@ async function viewTunnelLogs(id) {
       const pageLines = logLines.slice(start, start + pageSize);
       const htmlLines = pageLines.length ? pageLines.map(line => {
         let cls = '';
-        const m = line.match(/^\S+T(\S+?)Z\s+(ERR|WRN|INF|DBG)\s/);
-        const lvl = m ? m[1] : '';
+        const m = line.match(/^(\S+T\S+?)Z\s+(ERR|WRN|INF|DBG)\s/);
+        const lvl = m ? m[2] : '';
         if (lvl === 'ERR') cls = 'log-lvl-err';
         else if (lvl === 'WRN') cls = 'log-lvl-wrn';
         else if (lvl === 'INF') cls = 'log-lvl-inf';
