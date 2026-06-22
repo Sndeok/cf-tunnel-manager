@@ -110,7 +110,6 @@ pyyaml
 | Account / Cloudflare Tunnel | Edit |
 | Zone / DNS | Edit |
 | Zone / Zone | Read |
-| User / API Tokens | Read（用于 `/user/tokens/verify` 验证） |
 
 同时需要填写 Cloudflare **Account ID**。
 
