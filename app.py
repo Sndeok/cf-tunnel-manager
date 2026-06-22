@@ -69,13 +69,39 @@ def init_db():
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tunnel_id TEXT,
+            tunnel_name TEXT,
+            domain TEXT,
+            subdomain TEXT,
+            target TEXT,
             message TEXT,
             level TEXT DEFAULT 'info',
             created_at TEXT DEFAULT (datetime('now'))
         );
     """)
+    ensure_log_snapshot_columns(db)
     db.commit()
     db.close()
+
+
+def ensure_log_snapshot_columns(db):
+    """Add and backfill tunnel snapshot columns for existing installations."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(logs)").fetchall()}
+    for column in ["tunnel_name", "domain", "subdomain", "target"]:
+        if column not in columns:
+            db.execute(f"ALTER TABLE logs ADD COLUMN {column} TEXT")
+
+    db.execute(
+        """
+        UPDATE logs
+        SET
+            tunnel_name = COALESCE(tunnel_name, (SELECT name FROM tunnels WHERE tunnels.id = logs.tunnel_id)),
+            domain = COALESCE(domain, (SELECT domain FROM tunnels WHERE tunnels.id = logs.tunnel_id)),
+            subdomain = COALESCE(subdomain, (SELECT subdomain FROM tunnels WHERE tunnels.id = logs.tunnel_id)),
+            target = COALESCE(target, (SELECT target FROM tunnels WHERE tunnels.id = logs.tunnel_id))
+        WHERE tunnel_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM tunnels WHERE tunnels.id = logs.tunnel_id)
+        """
+    )
 
 
 def load_credentials():
@@ -91,6 +117,10 @@ def save_credentials(data):
     _zones_cache_key = None
     with open(CREDS_FILE, "w") as f:
         json.dump(data, f, indent=2)
+    try:
+        CREDS_FILE.chmod(0o600)
+    except OSError:
+        pass
 
 
 def cf_headers():
@@ -121,9 +151,44 @@ def cf_request(method, path, body=None):
 
 def add_log(tunnel_id, message, level="info"):
     db = get_db()
+    tunnel = None
+    if tunnel_id:
+        tunnel = db.execute("SELECT * FROM tunnels WHERE id = ?", (tunnel_id,)).fetchone()
     db.execute(
-        "INSERT INTO logs (tunnel_id, message, level) VALUES (?, ?, ?)",
-        (tunnel_id, message, level),
+        """
+        INSERT INTO logs (tunnel_id, tunnel_name, domain, subdomain, target, message, level)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            tunnel_id,
+            tunnel["name"] if tunnel else None,
+            tunnel["domain"] if tunnel else None,
+            tunnel["subdomain"] if tunnel else None,
+            tunnel["target"] if tunnel else None,
+            message,
+            level,
+        ),
+    )
+    db.commit()
+
+
+def add_tunnel_log_snapshot(tunnel, message, level="info"):
+    """Write a log entry while preserving tunnel context even if the tunnel is deleted later."""
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO logs (tunnel_id, tunnel_name, domain, subdomain, target, message, level)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            tunnel["id"],
+            tunnel["name"],
+            tunnel["domain"],
+            tunnel["subdomain"],
+            tunnel["target"],
+            message,
+            level,
+        ),
     )
     db.commit()
 
@@ -237,9 +302,11 @@ def start_tunnel_process(tunnel_id, reason="manual"):
     pid_file = PID_DIR / f"{tunnel_id}.pid"
 
     try:
-        with open(log_file, "a") as log:
-            log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {reason} start ===\n")
-            log.flush()
+        log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            with open(log_fd, 'w', closefd=False) as log:
+                log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {reason} start ===\n")
+                log.flush()
             proc = subprocess.Popen(
                 [
                     str(CLOUDFLARED_BIN),
@@ -249,11 +316,13 @@ def start_tunnel_process(tunnel_id, reason="manual"):
                     "run",
                     tunnel_id,
                 ],
-                stdout=log,
-                stderr=subprocess.STDOUT,
+                stdout=log_fd,
+                stderr=log_fd,
                 start_new_session=True,
                 cwd=str(CONFIG_DIR),
             )
+        finally:
+            os.close(log_fd)
         pid_file.write_text(str(proc.pid))
         db.execute("UPDATE tunnels SET status = 'running' WHERE id = ?", (tunnel_id,))
         db.commit()
@@ -417,11 +486,19 @@ def api_tunnels():
     domain = data["domain"]
     subdomain = data["subdomain"]
     target = data["target"]
+    if not domain or not subdomain or not target:
+        return jsonify({"error": "域名、子域名和目标服务不能为空"}), 400
+    if ".." in subdomain or any(c in subdomain for c in " /&?#"):
+        return jsonify({"error": "子域名包含非法字符"}), 400
+    if not target.startswith(("http://", "https://")):
+        return jsonify({"error": "目标服务必须以 http:// 或 https:// 开头"}), 400
     protocol = data.get("protocol", "http2")
     hostname = f"{subdomain}.{domain}"
 
     creds = load_credentials()
-    account_id = creds["account_id"]
+    account_id = creds.get("account_id")
+    if not account_id:
+        return jsonify({"error": "请先在「凭证配置」页面填写 Account ID"}), 400
 
     # 1. Create tunnel in Cloudflare (no config_src → use local config)
     result = cf_request(
@@ -500,6 +577,7 @@ def api_tunnels():
     }
     with open(CONFIG_DIR / f"{tunnel_id}.json", "w") as f:
         json.dump(cred_json, f)
+    (CONFIG_DIR / f"{tunnel_id}.json").chmod(0o600)
 
     with open(CONFIG_DIR / f"{tunnel_id}.yml", "w") as f:
         import yaml
@@ -533,15 +611,17 @@ def api_delete_tunnel(tunnel_id):
     tunnel = db.execute("SELECT * FROM tunnels WHERE id = ?", (tunnel_id,)).fetchone()
     if not tunnel:
         return jsonify({"error": "隧道不存在"}), 404
+    label = tunnel_label(tunnel)
 
     # Stop if running
     stop_tunnel_process(tunnel_id)
 
     creds = load_credentials()
-    account_id = creds["account_id"]
+    account_id = creds.get("account_id")
 
     # Delete from Cloudflare
-    cf_request("DELETE", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}")
+    if account_id:
+        cf_request("DELETE", f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}")
 
     # Delete DNS record if exists
     if tunnel["dns_record_id"] and tunnel["zone_id"]:
@@ -556,11 +636,10 @@ def api_delete_tunnel(tunnel_id):
     (PID_DIR / f"{tunnel_id}.pid").unlink(missing_ok=True)
     (LOG_DIR / f"{tunnel_id}.log").unlink(missing_ok=True)
 
-    db.execute("DELETE FROM tunnels WHERE id = ?", (tunnel_id,))
-    db.execute("DELETE FROM logs WHERE tunnel_id = ?", (tunnel_id,))
-    db.commit()
+    add_tunnel_log_snapshot(tunnel, f"隧道已删除：{label}", "warn")
 
-    add_log(tunnel_id, "隧道已删除", "warn")
+    db.execute("DELETE FROM tunnels WHERE id = ?", (tunnel_id,))
+    db.commit()
     return jsonify({"ok": True})
 
 
@@ -579,8 +658,10 @@ def api_start_tunnel(tunnel_id):
 def api_stop_tunnel(tunnel_id):
     stopped = stop_tunnel_process(tunnel_id)
     if stopped:
-        add_log(tunnel_id, "隧道已停止")
         db = get_db()
+        tunnel = db.execute("SELECT * FROM tunnels WHERE id = ?", (tunnel_id,)).fetchone()
+        label = tunnel_label(tunnel) if tunnel else tunnel_id[:8]
+        add_log(tunnel_id, f"隧道已停止：{label}")
         db.execute("UPDATE tunnels SET status = 'stopped' WHERE id = ?", (tunnel_id,))
         db.commit()
         return jsonify({"ok": True})
@@ -682,34 +763,23 @@ def api_tunnel_services(tunnel_id):
     return jsonify({"ok": True, "hostname": new_hostname})
 
 
-@app.route("/api/logs")
-def api_logs():
-    tunnel_id = request.args.get("tunnel_id")
-    db = get_db()
+def _fetch_logs(db, tunnel_id=None, limit=100):
+    """Fetch logs with tunnel context from snapshot or live tunnel table."""
+    base = """
+        SELECT logs.id, logs.tunnel_id, logs.message, logs.level, logs.created_at,
+               COALESCE(tunnels.name, logs.tunnel_name) AS tunnel_name,
+               COALESCE(tunnels.domain, logs.domain) AS domain,
+               COALESCE(tunnels.subdomain, logs.subdomain) AS subdomain,
+               COALESCE(tunnels.target, logs.target) AS target
+        FROM logs
+        LEFT JOIN tunnels ON tunnels.id = logs.tunnel_id
+    """
     if tunnel_id:
-        logs = db.execute(
-            """
-            SELECT logs.*, tunnels.name AS tunnel_name, tunnels.domain, tunnels.subdomain, tunnels.target
-            FROM logs
-            LEFT JOIN tunnels ON tunnels.id = logs.tunnel_id
-            WHERE logs.tunnel_id = ?
-            ORDER BY logs.created_at DESC
-            LIMIT 100
-            """,
-            (tunnel_id,),
-        ).fetchall()
+        rows = db.execute(base + " WHERE logs.tunnel_id = ? ORDER BY logs.created_at DESC LIMIT ?", (tunnel_id, limit)).fetchall()
     else:
-        logs = db.execute(
-            """
-            SELECT logs.*, tunnels.name AS tunnel_name, tunnels.domain, tunnels.subdomain, tunnels.target
-            FROM logs
-            LEFT JOIN tunnels ON tunnels.id = logs.tunnel_id
-            ORDER BY logs.created_at DESC
-            LIMIT 100
-            """
-        ).fetchall()
+        rows = db.execute(base + " ORDER BY logs.created_at DESC LIMIT ?", (limit,)).fetchall()
     results = []
-    for row in logs:
+    for row in rows:
         item = dict(row)
         if item.get("domain") and item.get("subdomain"):
             item["hostname"] = f"{item['subdomain']}.{item['domain']}"
@@ -725,7 +795,13 @@ def api_logs():
             item["hostname"] = ""
             item["tunnel_label"] = "系统"
         results.append(item)
-    return jsonify(results)
+    return results
+
+
+@app.route("/api/logs")
+def api_logs():
+    tunnel_id = request.args.get("tunnel_id")
+    return jsonify(_fetch_logs(get_db(), tunnel_id))
 
 
 @app.route("/api/check-update", methods=["POST"])
@@ -773,16 +849,16 @@ def _get_latest_version():
     try:
         import urllib.request
         proxy_env = _get_proxy_env()
-        proxy_handler = None
+        handlers = []
         if proxy_env.get("HTTPS_PROXY"):
-            from urllib.request import ProxyHandler, build_opener, install_opener
-            proxy_handler = ProxyHandler({"https": proxy_env["HTTPS_PROXY"], "http": proxy_env["HTTP_PROXY"]})
-            install_opener(build_opener(proxy_handler))
+            from urllib.request import ProxyHandler
+            handlers.append(ProxyHandler({"https": proxy_env["HTTPS_PROXY"], "http": proxy_env["HTTP_PROXY"]}))
+        opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
             headers={"Accept": "application/vnd.github+json", "User-Agent": "cf-tunnel-manager"}
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with opener.open(req, timeout=10) as resp:
             release = json.loads(resp.read())
             return release.get("tag_name", "").lstrip("v")
     except Exception:

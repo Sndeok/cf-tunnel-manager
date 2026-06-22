@@ -463,7 +463,7 @@ async function loadTunnels() {
   renderTunnelList(tunnels, 'tunnel-list');
   
   const sel = document.getElementById('new-tunnel-domain');
-  sel.innerHTML = zones.map(z => `<option value="${z.name}">${z.name}</option>`).join('');
+  sel.innerHTML = zones.map(z => `<option value="${escapeHtml(z.name)}">${escapeHtml(z.name)}</option>`).join('');
 }
 
 function renderTunnelList(tunnels, containerId) {
@@ -476,22 +476,22 @@ function renderTunnelList(tunnels, containerId) {
     <div style="margin-bottom:10px;">
       <div class="tunnel-item" style="margin-bottom:0;${document.getElementById('log-panel-'+t.id) ? 'border-radius:8px 8px 0 0;' : ''}">
         <div class="tunnel-info">
-          <div class="tunnel-name">${t.name}</div>
+          <div class="tunnel-name">${escapeHtml(t.name)}</div>
           <div class="tunnel-meta">
-            🌐 ${t.subdomain}.${t.domain} → ${t.target}
-            &nbsp;|&nbsp; <code style="font-size:11px;">${t.id}</code>
+            🌐 ${escapeHtml(t.subdomain)}.${escapeHtml(t.domain)} → ${escapeHtml(t.target)}
+            &nbsp;|&nbsp; <code style="font-size:11px;">${escapeHtml(t.id)}</code>
           </div>
         </div>
         <div class="tunnel-actions">
           <span class="badge ${t.status === 'running' ? 'badge-running' : 'badge-stopped'}">${t.status === 'running' ? '🟢 运行中' : '⏹ 已停止'}</span>
-          <button class="btn btn-sm btn-primary" onclick="toggleTunnel('${t.id}', '${t.status}')">
+          <button class="btn btn-sm btn-primary" onclick="toggleTunnel('${escapeHtml(t.id)}', '${escapeHtml(t.status)}')">
             ${t.status === 'running' ? '⏹ 停止' : '▶ 启动'}
           </button>
-          <button class="btn btn-sm btn-ghost" id="log-btn-${t.id}" onclick="viewTunnelLogs('${t.id}')" title="查看日志">📄</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteTunnel('${t.id}')">🗑</button>
+          <button class="btn btn-sm btn-ghost" id="log-btn-${escapeHtml(t.id)}" onclick="viewTunnelLogs('${escapeHtml(t.id)}')" title="查看日志">📄</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteTunnel('${escapeHtml(t.id)}')">🗑</button>
         </div>
       </div>
-      <div id="log-panel-${t.id}"></div>
+      <div id="log-panel-${escapeHtml(t.id)}"></div>
     </div>
   `).join('');
 }
