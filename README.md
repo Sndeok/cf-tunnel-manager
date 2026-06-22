@@ -218,4 +218,4 @@ docker compose build
 
 ## License
 
-未声明。建议补充 MIT、Apache-2.0 等开源许可证。
+MIT
