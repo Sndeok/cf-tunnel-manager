@@ -126,12 +126,14 @@ python3 app.py
 
 ### Docker 构建代理
 
-如果构建镜像时无法访问 GitHub / Alpine 软件源，修改 `Dockerfile` 顶部注释掉的代理：
+如果构建镜像时无法访问 GitHub / Alpine 软件源，取消 `Dockerfile` 顶部代理的注释并替换地址：
 
 ```dockerfile
-ENV HTTP_PROXY=http://your-proxy:port \
-    HTTPS_PROXY=http://your-proxy:port
+# ENV HTTP_PROXY=http://your-proxy-host:port \
+#     HTTPS_PROXY=http://your-proxy-host:port
 ```
+
+去掉开头的 `#` 并替换 `your-proxy-host:port` 为自己的代理地址。
 
 构建完成后 `Dockerfile` 末尾会清空代理，不影响运行时。
 
