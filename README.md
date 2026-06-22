@@ -109,7 +109,6 @@ pyyaml
 | --- | --- | --- |
 | Account | Cloudflare Tunnel | Read、Edit |
 | Zone | DNS | Read、Edit |
-| Zone | Zone | Read |
 
 同时需要填写 Cloudflare **Account ID**。
 
