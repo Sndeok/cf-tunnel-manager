@@ -1,8 +1,9 @@
 FROM alpine:3.20
 
-# Use proxy for mainland China network
-ENV HTTP_PROXY=http://192.168.31.66:7893 \
-    HTTPS_PROXY=http://192.168.31.66:7893
+# Optional build proxy. If your network cannot reach GitHub/Cloudflare during
+# docker build, uncomment the following lines and replace the proxy address.
+# ENV HTTP_PROXY=http://your-proxy-host:port \
+#     HTTPS_PROXY=http://your-proxy-host:port
 
 RUN apk add --no-cache python3 py3-pip py3-flask py3-yaml curl bash
 
