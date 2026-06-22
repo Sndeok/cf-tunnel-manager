@@ -1,0 +1,34 @@
+.git
+.gitignore
+.dockerignore
+__pycache__
+*.py[cod]
+.venv
+venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Runtime data and credentials
+data
+.cf-tunnel-manager
+credentials.json
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.pid
+*.log
+logs
+pids
+configs/*.json
+configs/*.yml
+configs/*.yaml
+
+# Secrets/local env
+.env
+.env.*
+*.secret
+*.key
+*.pem

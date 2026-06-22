@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CF Tunnel Manager</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23161b22'/><path d='M8 22V12l8-4 8 4v6' fill='none' stroke='%23bc8cff' stroke-width='2.5' stroke-linecap='round'/><circle cx='16' cy='18' r='2.5' fill='%233fb950'/><path d='M12 14l4 2 4-2M12 18l4 2 4-2' fill='none' stroke='%2358a6ff' stroke-width='1.5' stroke-linecap='round' opacity='.6'/></svg>">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  :root {
+    --bg: #090c10;
+    --bg2: #0f1419;
+    --bg3: #1a1f2b;
+    --border: #2a3040;
+    --text: #e6edf3;
+    --text2: #7d8590;
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #d2991d;
+    --purple: #bc8cff;
+    --purple-alpha: rgba(188,140,255,0.1);
+    --radius: 10px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text); display: flex; min-height: 100vh;
+  }
+  /* Subtle noise texture overlay for dark mode */
+  body::before {
+    content: ''; position: fixed; inset: 0; opacity: .03; z-index: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  :root[data-theme="light"] body::before { display: none; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+
+  /* Sidebar */
+ .sidebar {
+    width: 220px; background: var(--bg2);
+    border-right: 1px solid var(--border); padding: 24px 16px; display: flex; flex-direction: column;
+    gap: 4px; position: fixed; height: 100vh; z-index: 10;
+  }
+  .sidebar-logo {
+    display: flex; align-items: center; gap: 10px; padding: 0 8px 20px 8px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-logo svg { flex-shrink: 0; }
+  .sidebar-logo span { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+  .sidebar a {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px;
+    color: var(--text2); text-decoration: none; font-size: 13.5px; font-weight: 500;
+    cursor: pointer; transition: all .2s; position: relative;
+  }
+  .sidebar a:hover { background: var(--bg3); color: var(--text); }
+  .sidebar a.active {
+    background: var(--purple-alpha); color: var(--purple); font-weight: 600;
+  }
+  .sidebar a.active::before {
+    content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px; background: var(--purple); border-radius: 0 2px 2px 0;
+  }
+  .sidebar-footer { margin-top: auto; padding: 12px 8px 0; border-top: 1px solid var(--border); }
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 8px; box-shadow: 0 0 6px currentColor; }
+  .status-dot.ok { background: var(--green); color: var(--green); }
+  .status-dot.err { background: var(--red); color: var(--red); }
+
+  /* Main */
+  .main { margin-left: 220px; flex: 1; padding: 36px 40px; max-width: 1200px; }
+  .page-title { font-size: 26px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.5px; }
+  .page-subtitle { font-size: 13px; color: var(--text2); margin-bottom: 28px; }
+  .card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 24px; margin-bottom: 18px; transition: border-color .2s; box-shadow: 0 1px 3px rgba(0,0,0,.2);
+  }
+  .card:hover { border-color: rgba(188,140,255,.15); }
+  .card h3 { font-size: 15px; font-weight: 600; margin-bottom: 18px; color: var(--text); letter-spacing: -0.2px; }
+
+  /* Forms */
+  .form-group { margin-bottom: 16px; }
+  label { display: block; font-size: 12.5px; color: var(--text2); margin-bottom: 6px; font-weight: 500; letter-spacing: 0.2px; }
+  input, select, textarea {
+    width: 100%; max-width: 520px; padding: 9px 12px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-size: 13.5px; font-family: inherit;
+    outline: none; transition: border-color .2s, box-shadow .2s;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-alpha);
+  }
+  input::placeholder, textarea::placeholder { color: var(--text2); opacity: .45; }
+  select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%237d8590' d='M6 8L2 4h8z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
+  textarea { resize: vertical; min-height: 80px; max-width: 520px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-row input, .form-row select { max-width: 100%; }
+  @media (max-width: 768px) { .form-row { grid-template-columns: 1fr; } }
+
+  /* Buttons */
+  button, .btn {
+    padding: 9px 18px; border: none; border-radius: 8px; font-size: 13.5px; cursor: pointer;
+    font-weight: 600; font-family: inherit; transition: all .2s; letter-spacing: 0.1px;
+    display: inline-flex; align-items: center; gap: 6px; line-height: 1.4;
+  }
+  button:active { transform: scale(0.97); }
+  .btn-primary { background: linear-gradient(135deg, #8b5cf6, var(--purple)); color: #fff; box-shadow: 0 2px 8px rgba(139,92,246,.25); }
+  .btn-primary:hover { box-shadow: 0 4px 16px rgba(139,92,246,.4); }
+  .btn-danger { background: rgba(248,81,73,.12); color: var(--red); border: 1px solid rgba(248,81,73,.25); }
+  .btn-danger:hover { background: rgba(248,81,73,.2); }
+  .btn-green { background: rgba(63,185,80,.12); color: var(--green); border: 1px solid rgba(63,185,80,.25); }
+  .btn-green:hover { background: rgba(63,185,80,.22); }
+  .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
+  .btn-ghost { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--bg3); color: var(--text); }
+
+  /* Tunnel list */
+  .tunnel-item {
+    display: flex; align-items: center; justify-content: space-between; padding: 16px 18px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 8px; transition: border-color .2s, box-shadow .2s;
+  }
+  .tunnel-item:hover { border-color: rgba(188,140,255,.2); box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  .tunnel-info { flex: 1; min-width: 0; }
+  .tunnel-name { font-weight: 600; margin-bottom: 3px; font-size: 14px; }
+  .tunnel-meta { font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tunnel-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; margin-left: 16px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px;
+    border-radius: 20px; font-size: 11.5px; font-weight: 600;
+  }
+  .badge-running { background: rgba(63,185,80,.12); color: var(--green); }
+  .badge-running::before { content: ''; display: inline-block; width: 6px; height: 6px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
+  .badge-stopped { background: rgba(125,133,144,.08); color: var(--text2); }
+  .badge-stopped::before { content: ''; display: inline-block; width: 6px; height: 6px; background: var(--text2); border-radius: 50%; opacity: .5; }
+
+  /* Logs */
+  .log-panel { margin-top: 0; border: 1px solid var(--border); border-radius: 0 0 8px 8px; background: var(--bg); overflow: hidden; }
+  .log-panel-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; background: var(--bg3); border-bottom: 1px solid var(--border); font-size: 12px; }
+  .log-panel-body { padding: 0; max-height: 400px; overflow-y: auto; font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11.5px; line-height: 1.55; }
+  .log-line { padding: 2px 14px; border-bottom: 1px solid rgba(48,54,61,0.5); white-space: pre-wrap; word-break: break-all; }
+  .log-line:last-child { border-bottom: none; }
+  .log-ts { color: var(--text2); margin-right: 8px; user-select: none; }
+  .log-lvl-err, .log-lvl-ERR { color: var(--red); }
+  .log-lvl-wrn, .log-lvl-WRN { color: var(--orange); }
+  .log-lvl-inf, .log-lvl-INF { color: var(--blue); opacity: 0.85; }
+  .log-panel-footer { display: flex; justify-content: center; align-items: center; gap: 8px; padding: 8px 14px; background: var(--bg3); border-top: 1px solid var(--border); font-size: 12px; }
+  .log-panel-footer button { padding: 4px 10px; font-size: 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; }
+  .log-panel-footer button:disabled { opacity: 0.35; cursor: default; }
+  .log-panel-footer button:hover:not(:disabled) { background: var(--bg3); }
+  .log-empty { padding: 24px; text-align: center; color: var(--text2); font-size: 13px; }
+
+  /* Proxy toggle switch */
+  .toggle-label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13.5px; user-select: none; margin-bottom: 14px; }
+  .toggle-label input { display: none; }
+  .toggle-track {
+    width: 40px; height: 22px; background: var(--border); border-radius: 11px; position: relative;
+    transition: background .25s; flex-shrink: 0;
+  }
+  .toggle-track::after {
+    content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+    background: #fff; border-radius: 50%; transition: transform .25s; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  }
+  .toggle-label input:checked + .toggle-track { background: var(--purple); }
+  .toggle-label input:checked + .toggle-track::after { transform: translateX(18px); }
+  .proxy-section {
+    display: grid; grid-template-columns: 1fr 120px; gap: 16px;
+    transition: all .25s; overflow: hidden; max-height: 80px; opacity: 1;
+  }
+  .proxy-section.hidden { max-height: 0; opacity: 0; margin-top: 0; pointer-events: none; }
+
+  /* Theme buttons */
+  .theme-btn {
+    width: 32px; height: 28px; padding: 0; border: none; border-radius: 6px;
+    background: transparent; color: var(--text2); font-size: 14px; cursor: pointer;
+    transition: all .2s; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .theme-btn:hover { background: var(--bg); color: var(--text); }
+  .theme-btn.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+
+  /* Toast */
+  .toast {
+    position: fixed; top: 24px; right: 24px; padding: 12px 20px; border-radius: 10px;
+    font-size: 13px; font-weight: 500; z-index: 999; animation: slideIn 0.3s ease;
+    max-width: 400px; backdrop-filter: blur(12px); box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  }
+  .toast-success { background: rgba(26,127,55,.9); color: #fff; border: 1px solid rgba(63,185,80,.3); }
+  .toast-error { background: rgba(207,34,46,.9); color: #fff; border: 1px solid rgba(248,81,73,.3); }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  .hidden { display: none !important; }
+  .empty-state { text-align: center; padding: 48px 24px; color: var(--text2); }
+  .loading { text-align: center; padding: 32px; color: var(--text2); }
+
+  /* Light theme */
+  :root[data-theme="light"] {
+    --bg: #ffffff;
+    --bg2: #f6f8fa;
+    --bg3: #e8eaed;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text2: #656d76;
+    --purple-alpha: rgba(139,92,246,.12);
+  }
+  :root[data-theme="light"] .toast-success { background: rgba(26,127,55,.92); }
+  :root[data-theme="light"] .toast-error { background: rgba(207,34,46,.92); }
+  :root[data-theme="light"] .btn-primary { color: #fff; background: var(--purple); }
+  :root[data-theme="light"] .toggle-track::after { background: #fff; }
+  :root[data-theme="light"] .tunnel-item { background: var(--bg); }
+  :root[data-theme="light"] .badge-running { background: rgba(63,185,80,.1); }
+  :root[data-theme="light"] .badge-stopped { background: rgba(101,109,118,.08); }
+  :root[data-theme="light"] .log-panel { background: var(--bg2); }
+  :root[data-theme="light"] .log-panel-header { background: var(--bg3); }
+  :root[data-theme="light"] .log-panel-footer { background: var(--bg3); }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <svg width="28" height="28" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1a1f2b"/><path d="M8 22V12l8-4 8 4v6" fill="none" stroke="#bc8cff" stroke-width="2.5" stroke-linecap="round"/><circle cx="16" cy="18" r="2.5" fill="#3fb950"/><path d="M12 14l4 2 4-2M12 18l4 2 4-2" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round" opacity=".6"/></svg>
+    <span>CF Tunnel</span>
+  </div>
+  <a onclick="showPage('dashboard')" class="active" id="nav-dashboard">📊 仪表盘</a>
+  <a onclick="showPage('tunnels')" id="nav-tunnels">🔌 隧道管理</a>
+  <a onclick="showPage('config')" id="nav-config">⚙️ 凭证配置</a>
+  <a onclick="showPage('logs')" id="nav-logs">📋 操作日志</a>
+  <div class="sidebar-footer">
+    <div style="font-size:12px; color:var(--text2); display:flex; align-items:center; gap:6px;">
+      <span class="status-dot" id="cf-status-dot"></span>
+      <span id="cf-status-text">未连接</span>
+    </div>
+  </div>
+</nav>
+
+<!-- Theme switcher (fixed top-right) -->
+<div style="position:fixed;top:16px;right:20px;z-index:100;display:flex;background:var(--bg3);border-radius:8px;padding:3px;gap:2px;border:1px solid var(--border);">
+  <button onclick="setTheme('auto')" id="theme-auto" class="theme-btn" title="跟随系统">🖥</button>
+  <button onclick="setTheme('light')" id="theme-light" class="theme-btn" title="浅色主题">☀️</button>
+  <button onclick="setTheme('dark')" id="theme-dark" class="theme-btn" title="深色主题">🌙</button>
+</div>
+
+<!-- Main Content -->
+<div class="main" id="main-content">
+  <!-- Dashboard -->
+  <div id="page-dashboard">
+    <div class="page-title">📊 仪表盘</div>
+    <div class="page-subtitle">Cloudflare Tunnel 运行状态一览</div>
+    <div class="card">
+      <h3>隧道概览</h3>
+      <div id="dashboard-stats">加载中...</div>
+    </div>
+    <div id="dashboard-tunnels"></div>
+  </div>
+
+  <!-- Tunnels Page -->
+  <div id="page-tunnels" class="hidden">
+    <div class="page-title">🔌 隧道管理</div>
+    <div class="page-subtitle">创建、启停和监控 Cloudflare Tunnel</div>
+    <div class="card">
+      <h3>➕ 新建隧道</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>隧道名称</label>
+          <input type="text" id="new-tunnel-name" placeholder="可选，自动生成">
+        </div>
+        <div class="form-group">
+          <label>域名</label>
+          <select id="new-tunnel-domain"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>子域名</label>
+          <input type="text" id="new-tunnel-subdomain" placeholder="例如 nas">
+        </div>
+        <div class="form-group">
+          <label>目标服务</label>
+          <input type="text" id="new-tunnel-target" placeholder="http://IP:端口">
+        </div>
+      </div>
+      <div class="form-group" style="max-width:240px;">
+        <label>传输协议</label>
+        <select id="new-tunnel-protocol">
+          <option value="http2">HTTP/2（推荐，稳定）</option>
+          <option value="quic">QUIC（低延迟，UDP）</option>
+        </select>
+      </div>
+      <button class="btn-primary" onclick="createTunnel()">创建隧道</button>
+    </div>
+    <div id="tunnel-list"></div>
+  </div>
+
+  <!-- Config Page -->
+  <div id="page-config" class="hidden">
+    <div class="page-title">⚙️ 凭证配置</div>
+    <div class="page-subtitle">管理 Cloudflare API 凭证和下载代理</div>
+    <div class="card">
+      <h3>Cloudflare 凭证</h3>
+      <div class="form-group">
+        <label>Account ID</label>
+        <input type="text" id="cfg-account-id" placeholder="从 Cloudflare Dashboard 获取">
+      </div>
+      <div class="form-group">
+        <label>API Token</label>
+        <input type="password" id="cfg-api-token" placeholder="需要「账户」Cloudflare Tunnel和「区域」DNS的编辑和读写权限">
+      </div>
+      <div class="form-group">
+        <label>域名列表（一行一个）</label>
+        <textarea id="cfg-domains" rows="3" placeholder="example_a.com&#10;example_b.cn&#10;example_c.xyz"></textarea>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🔧 cloudflared 下载代理（仅用于下载和检查更新）</h3>
+      <label class="toggle-label">
+        <input type="checkbox" id="cfg-proxy-enabled" onchange="toggleProxyFields()">
+        <span class="toggle-track"></span>
+        启用代理（仅用于 cloudflared 下载和检查更新）
+      </label>
+      <div id="proxy-fields" class="proxy-section hidden">
+        <div class="form-group">
+          <label>代理地址</label>
+          <input type="text" id="cfg-proxy-host" placeholder="代理服务器 IP">
+        </div>
+        <div class="form-group">
+          <label>端口</label>
+          <input type="text" id="cfg-proxy-port" placeholder="7893">
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button class="btn-primary" onclick="saveConfig()">💾 保存并验证</button>
+        <span id="cf-version-area">检测中...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logs Page -->
+  <div id="page-logs" class="hidden">
+    <div class="page-title">📋 操作日志</div>
+    <div class="page-subtitle">隧道创建、启停和系统操作记录</div>
+    <div class="card">
+      <div id="log-entries"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Theme
+function setTheme(mode) {
+  const root = document.documentElement;
+  localStorage.setItem('cf-theme', mode);
+  if (mode === 'auto') {
+    root.removeAttribute('data-theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (!prefersDark) root.setAttribute('data-theme', 'light');
+  } else if (mode === 'light') {
+    root.setAttribute('data-theme', 'light');
+  } else {
+    root.removeAttribute('data-theme');
+  }
+  document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('theme-' + mode)?.classList.add('active');
+}
+(function initTheme() {
+  const saved = localStorage.getItem('cf-theme') || 'auto';
+  setTheme(saved);
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (localStorage.getItem('cf-theme') === 'auto') setTheme('auto');
+  });
+})();
+
+const API = '/api';
+let currentPage = 'dashboard';
+
+// Page switching
+function showPage(page) {
+  document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
+  document.getElementById('page-' + page).classList.remove('hidden');
+  document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
+  document.getElementById('nav-' + page).classList.add('active');
+  currentPage = page;
+  if (page === 'dashboard') loadDashboard();
+  else if (page === 'tunnels') loadTunnels();
+  else if (page === 'config') loadConfig();
+  else if (page === 'logs') loadLogs();
+}
+
+// Toast
+function toast(msg, type = 'success') {
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+// API helpers
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  return res.json();
+}
+
+// === Dashboard ===
+async function loadDashboard() {
+  const [tunnels, config] = await Promise.all([
+    api('/tunnels').catch(() => []),
+    api('/config').catch(() => ({})),
+  ]);
+  
+  document.getElementById('cf-status-dot').className = 'status-dot ' + (config.api_token_set ? 'ok' : 'err');
+  document.getElementById('cf-status-text').textContent = config.api_token_set ? '已配置' : '未配置';
+
+  const running = tunnels.filter(t => t.status === 'running').length;
+  document.getElementById('dashboard-stats').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+      <div style="text-align:center;padding:16px 12px;background:var(--bg);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:32px;font-weight:700;background:linear-gradient(135deg,var(--purple),#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">${tunnels.length}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">隧道总数</div>
+      </div>
+      <div style="text-align:center;padding:16px 12px;background:var(--bg);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:32px;font-weight:700;color:var(--green);">${running}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">运行中</div>
+      </div>
+      <div style="text-align:center;padding:16px 12px;background:var(--bg);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:32px;font-weight:700;color:var(--text2);">${tunnels.length - running}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">已停止</div>
+      </div>
+    </div>
+  `;
+
+  renderTunnelList(tunnels, 'dashboard-tunnels');
+}
+
+// === Tunnels ===
+async function loadTunnels() {
+  const tunnels = await api('/tunnels').catch(() => []);
+  const zones = await api('/zones').catch(() => []);
+  renderTunnelList(tunnels, 'tunnel-list');
+  
+  const sel = document.getElementById('new-tunnel-domain');
+  sel.innerHTML = zones.map(z => `<option value="${z.name}">${z.name}</option>`).join('');
+}
+
+function renderTunnelList(tunnels, containerId) {
+  const container = document.getElementById(containerId);
+  if (!tunnels.length) {
+    container.innerHTML = '<div class="empty-state">暂无隧道，去「隧道管理」创建一个吧</div>';
+    return;
+  }
+  container.innerHTML = tunnels.map(t => `
+    <div style="margin-bottom:10px;">
+      <div class="tunnel-item" style="margin-bottom:0;${document.getElementById('log-panel-'+t.id) ? 'border-radius:8px 8px 0 0;' : ''}">
+        <div class="tunnel-info">
+          <div class="tunnel-name">${t.name}</div>
+          <div class="tunnel-meta">
+            🌐 ${t.subdomain}.${t.domain} → ${t.target}
+            &nbsp;|&nbsp; <code style="font-size:11px;">${t.id}</code>
+          </div>
+        </div>
+        <div class="tunnel-actions">
+          <span class="badge ${t.status === 'running' ? 'badge-running' : 'badge-stopped'}">${t.status === 'running' ? '🟢 运行中' : '⏹ 已停止'}</span>
+          <button class="btn btn-sm btn-primary" onclick="toggleTunnel('${t.id}', '${t.status}')">
+            ${t.status === 'running' ? '⏹ 停止' : '▶ 启动'}
+          </button>
+          <button class="btn btn-sm btn-ghost" id="log-btn-${t.id}" onclick="viewTunnelLogs('${t.id}')" title="查看日志">📄</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteTunnel('${t.id}')">🗑</button>
+        </div>
+      </div>
+      <div id="log-panel-${t.id}"></div>
+    </div>
+  `).join('');
+}
+
+async function createTunnel() {
+  const body = {
+    name: document.getElementById('new-tunnel-name').value || undefined,
+    domain: document.getElementById('new-tunnel-domain').value,
+    subdomain: document.getElementById('new-tunnel-subdomain').value,
+    target: document.getElementById('new-tunnel-target').value,
+    protocol: document.getElementById('new-tunnel-protocol').value,
+  };
+  if (!body.domain || !body.subdomain || !body.target) {
+    return toast('请填写所有必填字段', 'error');
+  }
+  try {
+    const res = await fetch(API + '/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      toast(`隧道创建成功: ${data.hostname}`);
+      document.getElementById('new-tunnel-subdomain').value = '';
+      document.getElementById('new-tunnel-target').value = '';
+      loadTunnels();
+    } else {
+      toast(data.error || '创建失败', 'error');
+    }
+  } catch (e) {
+    toast('请求失败: ' + e.message, 'error');
+  }
+}
+
+async function toggleTunnel(id, currentStatus) {
+  const action = currentStatus === 'running' ? 'stop' : 'start';
+  try {
+    const res = await fetch(API + '/tunnels/' + id + '/' + action, { method: 'POST' });
+    if (res.ok) {
+      toast(action === 'start' ? '隧道已启动' : '隧道已停止');
+      // Re-render based on which page is visible
+      if (currentPage === 'dashboard') loadDashboard();
+      else if (currentPage === 'tunnels') loadTunnels();
+    } else {
+      const data = await res.json();
+      toast(data.error || '操作失败', 'error');
+    }
+  } catch (e) {
+    toast('请求失败', 'error');
+  }
+}
+
+async function deleteTunnel(id) {
+  if (!confirm('确定删除此隧道？这会同时删除 Cloudflare 上的隧道和 DNS 记录。')) return;
+  try {
+    const res = await fetch(API + '/tunnels/' + id, { method: 'DELETE' });
+    if (res.ok) {
+      toast('隧道已删除');
+      if (currentPage === 'dashboard') loadDashboard();
+      else if (currentPage === 'tunnels') loadTunnels();
+    } else {
+      const data = await res.json();
+      toast(data.error || '删除失败', 'error');
+    }
+  } catch (e) {
+    toast('请求失败', 'error');
+  }
+}
+
+async function viewTunnelLogs(id) {
+  const panel = document.getElementById('log-panel-' + id);
+  // Toggle: close if already open
+  if (panel.children.length > 0) {
+    panel.innerHTML = '';
+    const item = panel.previousElementSibling;
+    if (item) item.style.borderRadius = '';
+    return;
+  }
+  // Fetch and render
+  try {
+    const res = await fetch(API + '/tunnels/' + id + '/status');
+    const data = await res.json();
+    const logLines = (data.logs || '').trim().split('\n').filter(l => l);
+    const pageSize = 30;
+    const totalPages = Math.max(1, Math.ceil(logLines.length / pageSize));
+    let currentPage = totalPages; // start from last page (newest)
+
+    const item = panel.previousElementSibling;
+    if (item) item.style.borderRadius = '8px 8px 0 0';
+
+    function renderPage() {
+      const start = (currentPage - 1) * pageSize;
+      const pageLines = logLines.slice(start, start + pageSize);
+      const htmlLines = pageLines.length ? pageLines.map(line => {
+        let cls = '';
+        const m = line.match(/^\S+T(\S+?)Z\s+(ERR|WRN|INF|DBG)\s/);
+        const lvl = m ? m[1] : '';
+        if (lvl === 'ERR') cls = 'log-lvl-err';
+        else if (lvl === 'WRN') cls = 'log-lvl-wrn';
+        else if (lvl === 'INF') cls = 'log-lvl-inf';
+        const ts = m ? line.substring(11, 19) : '';
+        const body = m ? line.substring(m.index + m[0].length) : line;
+        return `<div class="log-line"><span class="log-ts">${ts}</span><span class="${cls}">${body.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span></div>`;
+      }).join('') : '<div class="log-empty">暂无日志</div>';
+
+      panel.innerHTML = `
+        <div class="log-panel">
+          <div class="log-panel-header">
+            <span>📄 ${id.substring(0,8)} — ${logLines.length} 条日志</span>
+            <button onclick="document.getElementById('log-panel-${id}').innerHTML='';this.closest('.tunnel-item')?.style&&(this.closest('.tunnel-item').style.borderRadius='')" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:14px;">✕ 收起</button>
+          </div>
+          <div class="log-panel-body">${htmlLines}</div>
+          ${totalPages > 1 ? `
+          <div class="log-panel-footer">
+            <button onclick="window._logPage_${id.replace(/-/g,'_')}(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}>◀ 上一页</button>
+            <span style="color:var(--text2);">${currentPage} / ${totalPages}</span>
+            <button onclick="window._logPage_${id.replace(/-/g,'_')}(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>下一页 ▶</button>
+          </div>` : ''}
+        </div>
+      `;
+      window['_logPage_' + id.replace(/-/g, '_')] = (p) => { currentPage = p; renderPage(); };
+    }
+
+    renderPage();
+  } catch (e) {
+    panel.innerHTML = '<div class="log-empty" style="color:var(--red);">获取日志失败</div>';
+  }
+}
+
+// === Config ===
+async function loadConfig() {
+  const config = await api('/config').catch(() => ({}));
+  document.getElementById('cfg-account-id').value = config.account_id || '';
+  document.getElementById('cfg-api-token').value = '';
+  document.getElementById('cfg-domains').value = (config.domains || []).join('\n');
+  document.getElementById('cfg-proxy-enabled').checked = config.proxy_enabled || false;
+  document.getElementById('cfg-proxy-host').value = config.proxy_host || '';
+  document.getElementById('cfg-proxy-port').value = config.proxy_port || '';
+  toggleProxyFields();
+  checkCloudflared();
+}
+
+function toggleProxyFields() {
+  const fields = document.getElementById('proxy-fields');
+  const enabled = document.getElementById('cfg-proxy-enabled').checked;
+  fields.classList.toggle('hidden', !enabled);
+}
+
+async function saveConfig() {
+  const accountId = document.getElementById('cfg-account-id').value.trim();
+  const apiToken = document.getElementById('cfg-api-token').value.trim();
+  const domains = document.getElementById('cfg-domains').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!accountId || !apiToken) return toast('请填写 Account ID 和 API Token', 'error');
+  if (!domains.length) return toast('请至少填写一个域名', 'error');
+  try {
+    const res = await fetch(API + '/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: accountId, api_token: apiToken, domains,
+        proxy_enabled: document.getElementById('cfg-proxy-enabled').checked,
+        proxy_host: document.getElementById('cfg-proxy-host').value.trim(),
+        proxy_port: document.getElementById('cfg-proxy-port').value.trim(),
+      }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      toast('凭证保存成功 ✅');
+      document.getElementById('cf-status-dot').className = 'status-dot ok';
+      document.getElementById('cf-status-text').textContent = '已配置';
+    } else {
+      toast('凭证验证失败: ' + (data.message || data.error || ''), 'error');
+    }
+  } catch (e) { toast('请求失败', 'error'); }
+}
+
+async function checkCloudflared() {
+  try {
+    const res = await fetch(API + '/install-cloudflared');
+    const data = await res.json();
+    const area = document.getElementById('cf-version-area');
+    if (data.installed) {
+      area.innerHTML = `<span style="color:var(--green);font-size:13px;">✅ ${data.version}</span>
+        <button class="btn btn-sm" onclick="checkUpdate()" id="btn-check-update" style="margin-left:8px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔄 检查更新</button>`;
+    } else {
+      area.innerHTML = '<button class="btn btn-sm btn-green" onclick="installCloudflared()">📥 安装 cloudflared</button>';
+    }
+  } catch(e) {}
+}
+
+async function checkUpdate() {
+  const area = document.getElementById('cf-version-area');
+  const btn = document.getElementById('btn-check-update');
+  if (btn) btn.textContent = '⏳ 检查中...';
+  try {
+    const res = await fetch(API + '/check-update', { method: 'POST' });
+    const data = await res.json();
+    if (data.update_available) {
+      area.innerHTML = `<span style="color:var(--green);font-size:13px;">✅ cloudflared version ${data.local}</span>
+        <span style="color:var(--orange);font-size:12px;margin-left:4px;">→ 新版本 ${data.latest}</span>
+        <button class="btn btn-sm" onclick="installCloudflared()" style="margin-left:8px;background:var(--orange);color:#000;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">⬇ 下载更新</button>`;
+      toast(`发现新版本: ${data.latest}`);
+    } else if (data.local) {
+      area.innerHTML = `<span style="color:var(--green);font-size:13px;">✅ cloudflared version ${data.local}（已是最新版）</span>
+        <button class="btn btn-sm" onclick="checkUpdate()" id="btn-check-update" style="margin-left:8px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔄 检查更新</button>`;
+      toast('已是最新版');
+    } else {
+      area.innerHTML = `<span style="color:var(--orange);font-size:13px;">⚠️ 无法获取版本信息</span>
+        <button class="btn btn-sm" onclick="checkUpdate()" id="btn-check-update" style="margin-left:8px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔄 重试</button>`;
+    }
+  } catch (e) {
+    area.innerHTML = '<button class="btn btn-sm btn-green" onclick="checkUpdate()">🔄 检查更新</button>';
+  }
+}
+
+async function installCloudflared() {
+  const area = document.getElementById('cf-version-area');
+  area.innerHTML = '<span style="color:var(--orange);font-size:13px;">⏳ 下载中...</span>';
+  try {
+    const res = await fetch(API + '/install-cloudflared', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      area.innerHTML = `<span style="color:var(--green);font-size:13px;">✅ ${data.version}</span>
+        <button class="btn btn-sm" onclick="checkUpdate()" id="btn-check-update" style="margin-left:8px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔄 检查更新</button>`;
+      toast('安装成功');
+    } else {
+      area.innerHTML = `<span style="color:var(--red);font-size:13px;">❌ ${data.error || '安装失败'}</span>
+        <button class="btn btn-sm btn-green" onclick="installCloudflared()" style="margin-left:8px;">📥 重试</button>`;
+      toast('安装失败', 'error');
+    }
+  } catch (e) {
+    area.innerHTML = '<button class="btn btn-sm btn-green" onclick="installCloudflared()">📥 安装 cloudflared</button>';
+  }
+}
+
+// === Logs ===
+async function loadLogs() {
+  try {
+    const logs = await api('/logs').catch(() => []);
+    const container = document.getElementById('log-entries');
+    if (!logs.length) {
+      container.innerHTML = '<div class="empty-state">暂无操作记录</div>';
+      return;
+    }
+    container.innerHTML = logs.map(l => `
+      <div class="log-entry">
+        <span class="log-time">${l.created_at}</span>
+        <span class="${l.level === 'warn' ? 'log-warn' : l.level === 'error' ? 'log-error' : ''}">${l.message}</span>
+      </div>
+    `).join('');
+  } catch (e) {}
+}
+
+// Init
+loadDashboard();
+</script>
+</body>
+</html>

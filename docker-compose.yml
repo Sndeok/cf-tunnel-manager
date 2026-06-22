@@ -1,0 +1,10 @@
+services:
+  cf-tunnel-manager:
+    build: .
+    container_name: cf-tunnel-manager
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/root/.cf-tunnel-manager
+    environment:
+      - TZ=Asia/Shanghai

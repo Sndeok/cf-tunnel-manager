@@ -1,0 +1,38 @@
+# Runtime data and credentials
+/data/
+.cf-tunnel-manager/
+credentials.json
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.pid
+*.log
+logs/
+pids/
+configs/*.json
+configs/*.yml
+configs/*.yaml
+
+# Secrets and local config
+.env
+.env.*
+*.secret
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
