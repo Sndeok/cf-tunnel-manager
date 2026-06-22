@@ -105,11 +105,11 @@ pyyaml
 
 需要在 Cloudflare Dashboard 创建 API Token。建议使用自定义 Token，最小权限如下：
 
-| 权限范围 | 权限 |
-| --- | --- |
-| Account / Cloudflare Tunnel | Edit |
-| Zone / DNS | Edit |
-| Zone / Zone | Read |
+| 资源类型 | 权限范围 | 权限 |
+| --- | --- | --- |
+| Account | Cloudflare Tunnel | Read、Edit |
+| Zone | DNS | Read、Edit |
+| Zone | Zone | Read |
 
 同时需要填写 Cloudflare **Account ID**。
 
